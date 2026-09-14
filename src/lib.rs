@@ -64,8 +64,8 @@ impl Shape for Xml {
     }
 
     fn shape(&self, stream: &Stream) -> Result<Shaped, ShapeError> {
-        let root = root::document(stream.bytes())
-            .map_err(|(reason, at)| ShapeError::new("xml", reason).at(at))?;
+        let root =
+            root::document(stream.bytes()).map_err(|stop| ShapeError::refused("xml", stop))?;
         let media = stream
             .media_type()
             .map_or_else(|| "application/xml".to_string(), str::to_string);
