@@ -5,11 +5,12 @@
 //!
 //! Not a parser. No tree, no entity expansion, no attribute beyond the
 //! root's namespace declarations. A shape sections and names; a contract
-//! validates. The cursor — peek, the rest, whitespace — is the Foundation's
-//! [`Scan`] (ADR-0044); the grammar of a document is this file's.
+//! validates. The cursor — peek, the rest, whitespace — is the estate's one,
+//! `codec::cursor::Cursor` (ADR-0044); the grammar of a document is this
+//! file's.
 
+use codec::cursor::Cursor;
 use message::Stop;
-use message::scan::Scan;
 
 /// What the root element says about itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,9 +41,9 @@ impl Root {
 /// # Errors
 /// The reason and the byte at which the bytes stopped being a document.
 pub fn document(bytes: &[u8]) -> Result<Root, Stop> {
-    let mut walk = Scan::new(bytes);
+    let mut walk = Cursor::new(bytes);
     if bytes.starts_with(b"\xef\xbb\xbf") {
-        walk.at = 3;
+        walk.advance(3);
     }
     let root = prolog(&mut walk)?;
     let mut open: Vec<&[u8]> = Vec::new();
@@ -88,11 +89,15 @@ fn is_name(byte: u8) -> bool {
 }
 
 /// Skip to just past `close`, or stop with `reason` at the markup start.
-fn past(walk: &mut Scan<'_>, close: &[u8], reason: &'static str) -> Result<(), Stop> {
-    let start = walk.at;
-    match walk.rest().windows(close.len()).position(|w| w == close) {
+fn past(walk: &mut Cursor<'_>, close: &[u8], reason: &'static str) -> Result<(), Stop> {
+    let start = walk.position();
+    match walk
+        .remaining()
+        .windows(close.len())
+        .position(|w| w == close)
+    {
         Some(found) => {
-            walk.at += found + close.len();
+            walk.advance(found + close.len());
             Ok(())
         }
         None => Err((reason, start)),
@@ -101,8 +106,8 @@ fn past(walk: &mut Scan<'_>, close: &[u8], reason: &'static str) -> Result<(), S
 
 /// The comment, processing instruction or CDATA section under the cursor,
 /// if one begins there.
-fn misc(walk: &mut Scan<'_>) -> Result<bool, Stop> {
-    let rest = walk.rest();
+fn misc(walk: &mut Cursor<'_>) -> Result<bool, Stop> {
+    let rest = walk.remaining();
     if rest.starts_with(b"<!--") {
         past(walk, b"-->", "unterminated comment")?;
     } else if rest.starts_with(b"<?") {
@@ -116,29 +121,29 @@ fn misc(walk: &mut Scan<'_>) -> Result<bool, Stop> {
 }
 
 /// Everything before the root; the offset of the root's `<`.
-fn prolog(walk: &mut Scan<'_>) -> Result<usize, Stop> {
+fn prolog(walk: &mut Cursor<'_>) -> Result<usize, Stop> {
     loop {
-        walk.whitespace();
+        walk.skip_whitespace();
         if misc(walk)? {
             continue;
         }
-        if walk.rest().starts_with(b"<!DOCTYPE") {
+        if walk.remaining().starts_with(b"<!DOCTYPE") {
             doctype(walk)?;
             continue;
         }
-        return match walk.rest() {
-            [b'<', next, ..] if is_name_start(*next) => Ok(walk.at),
-            [] => Err(("no root element", walk.at)),
-            _ => Err(("expected the root element", walk.at)),
+        return match walk.remaining() {
+            [b'<', next, ..] if is_name_start(*next) => Ok(walk.position()),
+            [] => Err(("no root element", walk.position())),
+            _ => Err(("expected the root element", walk.position())),
         };
     }
 }
 
-fn doctype(walk: &mut Scan<'_>) -> Result<(), Stop> {
-    let start = walk.at;
+fn doctype(walk: &mut Cursor<'_>) -> Result<(), Stop> {
+    let start = walk.position();
     let mut subset = 0usize;
     while let Some(byte) = walk.peek() {
-        walk.at += 1;
+        walk.advance(1);
         match byte {
             b'[' => subset += 1,
             b']' => subset = subset.saturating_sub(1),
@@ -152,88 +157,96 @@ fn doctype(walk: &mut Scan<'_>) -> Result<(), Stop> {
 /// A start tag under the cursor: its name and attributes, the name pushed
 /// on `open` unless the tag closes itself.
 fn start_tag<'a>(
-    walk: &mut Scan<'a>,
+    walk: &mut Cursor<'a>,
     open: &mut Vec<&'a [u8]>,
 ) -> Result<(&'a [u8], Attributes<'a>), Stop> {
-    walk.at += 1;
+    walk.advance(1);
     let name = name(walk, "expected an element name")?;
     let mut attributes = Vec::new();
     loop {
-        walk.whitespace();
+        walk.skip_whitespace();
         match walk.peek() {
             Some(b'>') => {
-                walk.at += 1;
+                walk.advance(1);
                 open.push(name);
                 return Ok((name, attributes));
             }
-            Some(b'/') if walk.bytes.get(walk.at + 1) == Some(&b'>') => {
-                walk.at += 2;
+            Some(b'/') if walk.remaining().get(1) == Some(&b'>') => {
+                walk.advance(2);
                 return Ok((name, attributes));
             }
             Some(byte) if is_name_start(byte) => {
                 attributes.push(attribute(walk)?);
             }
-            _ => return Err(("expected an attribute or the end of the tag", walk.at)),
+            _ => {
+                return Err((
+                    "expected an attribute or the end of the tag",
+                    walk.position(),
+                ));
+            }
         }
     }
 }
 
-fn name<'a>(walk: &mut Scan<'a>, reason: &'static str) -> Result<&'a [u8], Stop> {
-    let start = walk.at;
+fn name<'a>(walk: &mut Cursor<'a>, reason: &'static str) -> Result<&'a [u8], Stop> {
+    let start = walk.position();
     if !walk.peek().is_some_and(is_name_start) {
         return Err((reason, start));
     }
     while walk.peek().is_some_and(is_name) {
-        walk.at += 1;
+        walk.advance(1);
     }
-    Ok(&walk.bytes[start..walk.at])
+    Ok(walk.since(start))
 }
 
-fn attribute<'a>(walk: &mut Scan<'a>) -> Result<(&'a [u8], &'a [u8]), Stop> {
+fn attribute<'a>(walk: &mut Cursor<'a>) -> Result<(&'a [u8], &'a [u8]), Stop> {
     let key = name(walk, "expected an attribute name")?;
-    walk.whitespace();
+    walk.skip_whitespace();
     if walk.peek() != Some(b'=') {
-        return Err(("expected = after the attribute name", walk.at));
+        return Err(("expected = after the attribute name", walk.position()));
     }
-    walk.at += 1;
-    walk.whitespace();
+    walk.advance(1);
+    walk.skip_whitespace();
     let Some(quote @ (b'"' | b'\'')) = walk.peek() else {
-        return Err(("expected a quoted attribute value", walk.at));
+        return Err(("expected a quoted attribute value", walk.position()));
     };
-    let start = walk.at + 1;
-    let Some(length) = walk.bytes[start..].iter().position(|b| *b == quote) else {
-        return Err(("unterminated attribute value", walk.at));
+    let opened = walk.position();
+    walk.advance(1);
+    let Some(length) = walk.remaining().iter().position(|b| *b == quote) else {
+        return Err(("unterminated attribute value", opened));
     };
-    walk.at = start + length + 1;
-    Ok((key, &walk.bytes[start..start + length]))
+    let value = &walk.remaining()[..length];
+    walk.advance(length + 1);
+    Ok((key, value))
 }
 
 /// One piece of content inside the root: text, markup, a start tag or
 /// the end tag that closes the innermost open element.
-fn content<'a>(walk: &mut Scan<'a>, open: &mut Vec<&'a [u8]>) -> Result<(), Stop> {
-    let Some(found) = walk.rest().iter().position(|b| *b == b'<') else {
-        return Err(("the element is never closed", walk.bytes.len()));
+fn content<'a>(walk: &mut Cursor<'a>, open: &mut Vec<&'a [u8]>) -> Result<(), Stop> {
+    let Some(found) = walk.remaining().iter().position(|b| *b == b'<') else {
+        let end = walk.position() + walk.remaining().len();
+        return Err(("the element is never closed", end));
     };
-    walk.at += found;
+    walk.advance(found);
     if misc(walk)? {
         return Ok(());
     }
-    match walk.rest() {
+    match walk.remaining() {
         [b'<', b'/', ..] => end_tag(walk, open),
         [b'<', next, ..] if is_name_start(*next) => start_tag(walk, open).map(|_| ()),
-        _ => Err(("expected a tag", walk.at)),
+        _ => Err(("expected a tag", walk.position())),
     }
 }
 
-fn end_tag<'a>(walk: &mut Scan<'a>, open: &mut Vec<&'a [u8]>) -> Result<(), Stop> {
-    let start = walk.at;
-    walk.at += 2;
+fn end_tag<'a>(walk: &mut Cursor<'a>, open: &mut Vec<&'a [u8]>) -> Result<(), Stop> {
+    let start = walk.position();
+    walk.advance(2);
     let name = name(walk, "expected an element name")?;
-    walk.whitespace();
+    walk.skip_whitespace();
     if walk.peek() != Some(b'>') {
-        return Err(("expected > to end the tag", walk.at));
+        return Err(("expected > to end the tag", walk.position()));
     }
-    walk.at += 1;
+    walk.advance(1);
     if open.pop() != Some(name) {
         return Err(("the end tag does not close the open element", start));
     }
@@ -241,14 +254,14 @@ fn end_tag<'a>(walk: &mut Scan<'a>, open: &mut Vec<&'a [u8]>) -> Result<(), Stop
 }
 
 /// Everything after the root: whitespace, comments and instructions.
-fn trailer(walk: &mut Scan<'_>) -> Result<(), Stop> {
+fn trailer(walk: &mut Cursor<'_>) -> Result<(), Stop> {
     loop {
-        walk.whitespace();
-        if walk.at >= walk.bytes.len() {
+        walk.skip_whitespace();
+        if walk.is_empty() {
             return Ok(());
         }
-        if walk.rest().starts_with(b"<![CDATA[") || !misc(walk)? {
-            return Err(("content after the document", walk.at));
+        if walk.remaining().starts_with(b"<![CDATA[") || !misc(walk)? {
+            return Err(("content after the document", walk.position()));
         }
     }
 }
