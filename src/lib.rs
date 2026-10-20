@@ -59,7 +59,7 @@ impl Shape for Xml {
         MEDIA_TYPES
     }
 
-    fn recognises(&self, bytes: &[u8]) -> bool {
+    fn recognizes(&self, bytes: &[u8]) -> bool {
         opens_with_markup(bytes)
     }
 
@@ -132,17 +132,17 @@ mod tests {
     }
 
     #[test]
-    fn the_shape_claims_xml_and_its_suffixes_and_recognises_a_leading_tag() {
+    fn the_shape_claims_xml_and_its_suffixes_and_recognizes_a_leading_tag() {
         assert_eq!(Xml.technology(), "xml");
         assert!(Xml.media_types().contains(&"application/xml"));
         assert!(Xml.media_types().contains(&"text/xml"));
         assert!(Xml.media_types().contains(&"application/soap+xml"));
-        assert!(Xml.recognises(b"<?xml version=\"1.0\"?><a/>"));
-        assert!(Xml.recognises(b"\xef\xbb\xbf\n  <a/>"));
-        assert!(Xml.recognises(b"<!-- c --><a/>"));
-        assert!(!Xml.recognises(b"{\"a\": 1}"));
-        assert!(!Xml.recognises(b"< a/>"));
-        assert!(!Xml.recognises(b""));
+        assert!(Xml.recognizes(b"<?xml version=\"1.0\"?><a/>"));
+        assert!(Xml.recognizes(b"\xef\xbb\xbf\n  <a/>"));
+        assert!(Xml.recognizes(b"<!-- c --><a/>"));
+        assert!(!Xml.recognizes(b"{\"a\": 1}"));
+        assert!(!Xml.recognizes(b"< a/>"));
+        assert!(!Xml.recognizes(b""));
     }
 
     #[test]
