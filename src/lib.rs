@@ -64,13 +64,13 @@ impl Shape for Xml {
     }
 
     fn shape(&self, stream: &Stream) -> Result<Shaped, ShapeError> {
-        let root =
-            root::document(stream.bytes()).map_err(|stop| ShapeError::refused("xml", stop))?;
+        let bytes = message::loaded(self.technology(), stream)?;
+        let root = root::document(bytes).map_err(|stop| ShapeError::refused("xml", stop))?;
         let media = stream
             .media_type()
             .map_or_else(|| "application/xml".to_string(), str::to_string);
         Ok(Shaped {
-            parts: vec![Part::new(None, stream.bytes(), Some(media))],
+            parts: vec![Part::new(None, bytes, Some(media))],
             message_type: Some(root.expanded()),
         })
     }
@@ -148,12 +148,18 @@ mod tests {
     #[test]
     fn choose_picks_xml_by_media_type_and_by_look() {
         let shapes: [&dyn Shape; 1] = [&Xml];
-        let by_media = message::choose(&shapes, &stream(b"x", Some("Application/XML")));
+        let by_media =
+            message::choose(&shapes, &stream(b"x", Some("Application/XML"))).expect("held");
         assert_eq!(by_media.map(Shape::technology), Some("xml"));
-        let by_suffix = message::choose(&shapes, &stream(b"x", Some("image/svg+xml")));
+        let by_suffix =
+            message::choose(&shapes, &stream(b"x", Some("image/svg+xml"))).expect("held");
         assert_eq!(by_suffix.map(Shape::technology), Some("xml"));
-        let by_look = message::choose(&shapes, &stream(b"<a/>", None));
+        let by_look = message::choose(&shapes, &stream(b"<a/>", None)).expect("held");
         assert_eq!(by_look.map(Shape::technology), Some("xml"));
-        assert!(message::choose(&shapes, &stream(b"plain", None)).is_none());
+        assert!(
+            message::choose(&shapes, &stream(b"plain", None))
+                .expect("held")
+                .is_none()
+        );
     }
 }
