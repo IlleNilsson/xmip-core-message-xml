@@ -39,8 +39,15 @@ const MEDIA_TYPES: &[&str] = &[
 ];
 
 /// Whether the bytes open, after a BOM and whitespace, with a declaration,
-/// a comment, a document type or an element.
+/// a comment, a document type or an element; a UTF-16 document by its
+/// byte order mark and its first `<`.
 fn opens_with_markup(bytes: &[u8]) -> bool {
+    if matches!(
+        bytes,
+        [0xFF, 0xFE, b'<', 0, ..] | [0xFE, 0xFF, 0, b'<', ..] | [b'<', 0, b'?', 0, ..]
+    ) {
+        return true;
+    }
     let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
     let mut rest = bytes;
     while let [b' ' | b'\t' | b'\r' | b'\n', tail @ ..] = rest {
